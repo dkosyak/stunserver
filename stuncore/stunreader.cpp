@@ -22,7 +22,10 @@
 #include "stunutils.h"
 #include "socketaddress.h"
 #include <boost/crc.hpp>
-
+#ifdef CUSTOM_CRYPT
+#include "crypt.h"
+#include "picohash.h"
+#else
 #ifndef __APPLE__
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
@@ -31,7 +34,7 @@
 #define COMMON_DIGEST_FOR_OPENSSL
 #include <CommonCrypto/CommonCrypto.h>
 #endif
-
+#endif
 #include "stunauth.h"
 #include "fasthash.h"
 
@@ -152,6 +155,10 @@ HRESULT CStunMessageReader::ValidateMessageIntegrity(uint8_t* key, size_t keylen
     const size_t c_hmacsize = 20;
     uint8_t hmaccomputed[c_hmacsize] = {}; // zero-init
     unsigned int hmaclength = c_hmacsize;
+#ifdef CUSTOM_CRYPT
+    picohash_ctx_t ctx;
+
+#else
 #ifndef __APPLE__
     HMAC_CTX* ctx = NULL;
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
@@ -168,6 +175,7 @@ HRESULT CStunMessageReader::ValidateMessageIntegrity(uint8_t* key, size_t keylen
     
     UNREFERENCED_VARIABLE(hmaclength);
 #endif
+#endif // CUSTOM_CRYPT
     uint32_t chunk32;
     uint16_t chunk16;
     size_t len, nChunks;
@@ -204,6 +212,9 @@ HRESULT CStunMessageReader::ValidateMessageIntegrity(uint8_t* key, size_t keylen
     stream.Attach(spBuffer, false);
     
     // Here comes the fun part.  If there is a fingerprint attribute, we have to adjust the length header in computing the hash
+#ifdef CUSTOM_CRYPT
+    picohash_init_hmac(&ctx, picohash_init_sha1, key, keylength);
+#else
 #ifndef __APPLE__
 #if OPENSSL_VERSION_NUMBER < 0x10100000L // could be lower!
     HMAC_Init(ctx, key, keylength, EVP_sha1());
@@ -213,16 +224,21 @@ HRESULT CStunMessageReader::ValidateMessageIntegrity(uint8_t* key, size_t keylen
 #else
     CCHmacInit(ctx, kCCHmacAlgSHA1, key, keylength);
 #endif
+#endif
     fContextInit = true;
     
     // message type
     Chk(stream.ReadUint16(&chunk16));
+#ifdef CUSTOM_CRYPT
+    picohash_update(&ctx, &chunk16, sizeof(chunk16));
+
+#else
 #ifndef __APPLE__
     HMAC_Update(ctx, (unsigned char*)&chunk16, sizeof(chunk16));
 #else
     CCHmacUpdate(ctx, &chunk16, sizeof(chunk16));
 #endif
-    
+#endif    
     // message length
     Chk(stream.ReadUint16(&chunk16));
     if (fFingerprintAdjustment)
@@ -236,13 +252,15 @@ HRESULT CStunMessageReader::ValidateMessageIntegrity(uint8_t* key, size_t keylen
         
         chunk16 = htons(adjustedlengthHeader);
     }
-    
+#ifdef CUSTOM_CRYPT
+    picohash_update(&ctx, &chunk16, sizeof(chunk16));
+#else
 #ifndef __APPLE__
     HMAC_Update(ctx, (unsigned char*)&chunk16, sizeof(chunk16));
 #else
     CCHmacUpdate(ctx, &chunk16, sizeof(chunk16));
 #endif
-    
+#endif  
     // now include everything up to the hash attribute itself.
     len = pAttribIntegrity->offset;
     len -= 4; // subtract the size of the attribute header
@@ -255,19 +273,25 @@ HRESULT CStunMessageReader::ValidateMessageIntegrity(uint8_t* key, size_t keylen
     for (size_t count = 0; count < nChunks; count++)
     {
         Chk(stream.ReadUint32(&chunk32));
+#ifdef CUSTOM_CRYPT
+        picohash_update(&ctx, &chunk32, sizeof(chunk32));
+#else
 #ifndef __APPLE__
         HMAC_Update(ctx, (unsigned char*)&chunk32, sizeof(chunk32));
 #else
         CCHmacUpdate(ctx, &chunk32, sizeof(chunk32));
 #endif
+#endif
     }
-    
+#ifdef CUSTOM_CRYPT
+    picohash_final(&ctx, hmaccomputed);
+#else
 #ifndef __APPLE__
     HMAC_Final(ctx, hmaccomputed, &hmaclength);
 #else
     CCHmacFinal(ctx, hmaccomputed);
 #endif
-    
+#endif    
     
     // now compare the bytes
     cmp = memcmp(hmaccomputed, spBuffer->GetData() + pAttribIntegrity->offset, c_hmacsize);
@@ -277,6 +301,9 @@ HRESULT CStunMessageReader::ValidateMessageIntegrity(uint8_t* key, size_t keylen
 Cleanup:
     if (fContextInit)
     {
+#ifdef CUSTOM_CRYPT
+        picohash_reset(&ctx);
+#else
 #ifndef __APPLE__
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
         HMAC_CTX_cleanup(ctx);
@@ -285,6 +312,7 @@ Cleanup:
 #endif
 #else
         UNREFERENCED_VARIABLE(fContextInit);
+#endif
 #endif
     }
         

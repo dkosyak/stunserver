@@ -23,7 +23,10 @@
 
 #include "stunbuilder.h"
 #include <boost/crc.hpp>
+#ifdef CUSTOM_CRYPT
+#include "crypt.h"
 
+#else 
 #ifndef __APPLE__
 #include <openssl/md5.h>
 #include <openssl/hmac.h>
@@ -31,7 +34,7 @@
 #define COMMON_DIGEST_FOR_OPENSSL
 #include <CommonCrypto/CommonCrypto.h>
 #endif
-
+#endif // CUSTOM_CRYPT
 
 #include "stunauth.h"
 
@@ -505,7 +508,14 @@ HRESULT CStunMessageBuilder::AddMessageIntegrityImpl(uint8_t* key, size_t keysiz
     
     // now do a little pointer math so that HMAC can write exactly to where the hash bytes will appear
     pDstBuf = ((uint8_t*)pData) + length + 4;
+#ifdef CUSTOM_CRYPT
+    picohash_ctx_t ctx;
+    picohash_init_hmac(&ctx, picohash_init_sha1, key, keysize);
+    picohash_update(&ctx, pData, length);
+    picohash_final(&ctx, pDstBuf);
+    picohash_reset(&ctx);
     
+#else
 #ifndef __APPLE__
     pHashResult = HMAC(EVP_sha1(), key, keysize, (uint8_t*)pData, length, pDstBuf, &resultlength);
     ASSERT(resultlength == 20);
@@ -513,6 +523,7 @@ HRESULT CStunMessageBuilder::AddMessageIntegrityImpl(uint8_t* key, size_t keysiz
 #else
     CCHmac(kCCHmacAlgSHA1, key, keysize,(uint8_t*)pData, length, pDstBuf);
     UNREFERENCED_VARIABLE(resultlength);
+#endif
 #endif
     
 Cleanup:
@@ -569,13 +580,15 @@ HRESULT CStunMessageBuilder::AddMessageIntegrityLongTerm(const char* pszUserName
     *pDst ='\0'; // null terminate for debugging (this char doesn not get hashed
     
     ASSERT((pDst-key) == lenTotal);
-
+#ifdef CUSTOM_CRYPT
+    pResult = MD5(key, lenTotal, hash);
+#else
 #ifndef __APPLE__
     pResult = MD5(key, lenTotal, hash);
 #else
     pResult = CC_MD5(key, lenTotal, hash);
 #endif
-    
+#endif // CUSTOM_CRYPTO    
     ASSERT(pResult != NULL);
     hr= AddMessageIntegrityImpl(hash, MD5_DIGEST_LENGTH);
     
